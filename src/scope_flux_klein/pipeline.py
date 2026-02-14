@@ -1,15 +1,15 @@
 """FLUX Klein Realtime pipeline -- continuous image generation.
 
 Generates images in real-time using the FLUX.2-klein-4B model.
-Each call to __call__() runs a full inference pass (2 steps by default),
-producing a fresh image from the current prompt. In video mode,
-the input frame conditions the generation via img2img.
+Each call to __call__() checks if parameters changed since the last
+call. If nothing changed (and seed is fixed), the cached frame is
+returned instantly. Otherwise a fresh inference pass runs.
+In video mode, the input frame conditions the generation via img2img.
 """
 
 from __future__ import annotations
 
 import logging
-import threading
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -35,8 +35,9 @@ class FluxKleinPipeline(Pipeline):
       Connect a camera OR the drawing canvas as the video source to draw
       and have FLUX transform your sketch in real-time.
 
-    Called continuously during streaming. Each invocation runs a full
-    FLUX inference pass and returns a single-frame output.
+    Called continuously during streaming. Uses parameter change detection
+    to avoid redundant inference — only regenerates when the user changes
+    the prompt, a slider, or a new video frame arrives.
     """
 
     @classmethod
@@ -61,12 +62,12 @@ class FluxKleinPipeline(Pipeline):
             num_inference_steps=num_inference_steps,
         )
 
-        # Store previous output for temporal continuity
+        # Cached output and parameter signature for change detection.
+        # Scope calls __call__() in a tight loop — we only run inference
+        # when something actually changed, returning the cached frame
+        # otherwise to prevent output queue overflow.
         self._prev_output: torch.Tensor | None = None
-
-        # Skip-if-busy: prevent queue overflow by returning cached frame
-        # when the previous generation hasn't finished yet
-        self._busy_lock = threading.Lock()
+        self._prev_params: dict | None = None
 
     def prepare(self, **kwargs) -> Requirements | None:
         """Declare input requirements based on current mode.
@@ -82,8 +83,9 @@ class FluxKleinPipeline(Pipeline):
     def __call__(self, **kwargs) -> dict:
         """Generate an image from the current prompt and optional input frame.
 
-        Called once per frame during streaming. Reads the prompt from kwargs
-        and generates a new image using FLUX.2-klein-4B.
+        Called continuously during streaming. Compares current parameters
+        against the previous call — if nothing changed and seed is fixed,
+        returns the cached output instantly without running inference.
         """
         # Read runtime parameters
         prompt = kwargs.get("prompt", "")
@@ -98,44 +100,55 @@ class FluxKleinPipeline(Pipeline):
         if not prompt.strip():
             if self._prev_output is not None:
                 return {"video": self._prev_output}
-            black = torch.zeros(1, output_height, output_width, 3)
-            return {"video": black}
+            return {"video": torch.zeros(1, output_height, output_width, 3)}
 
-        # Skip-if-busy: if still generating the previous frame, return
-        # the cached output immediately to prevent output queue overflow
-        if not self._busy_lock.acquire(blocking=False):
-            if self._prev_output is not None:
-                return {"video": self._prev_output}
-            black = torch.zeros(1, output_height, output_width, 3)
-            return {"video": black}
+        # Build parameter signature for change detection.
+        # For video input, use id() so a new tensor object = new frame.
+        current_params = {
+            "prompt": prompt,
+            "guidance_scale": guidance_scale,
+            "width": output_width,
+            "height": output_height,
+            "strength": strength,
+            "seed": seed,
+            "video_id": id(video) if video is not None else None,
+        }
 
-        try:
-            # Dispatch based on mode
-            if video is not None and len(video) > 0:
-                result = self._generate_img2img(
-                    prompt=prompt,
-                    input_frames=video,
-                    strength=strength,
-                    width=output_width,
-                    height=output_height,
-                    guidance_scale=guidance_scale,
-                    seed=seed,
-                )
-            else:
-                result = self._generate_text(
-                    prompt=prompt,
-                    width=output_width,
-                    height=output_height,
-                    guidance_scale=guidance_scale,
-                    seed=seed,
-                )
+        # Return cached output if nothing changed and seed is fixed.
+        # seed == -1 means "random each frame", so always regenerate.
+        if (
+            self._prev_output is not None
+            and self._prev_params == current_params
+            and seed != -1
+        ):
+            return {"video": self._prev_output}
 
-            # Store for temporal continuity
-            self._prev_output = result.detach().clone()
+        # --- Parameters changed or seed is random: run inference ---
 
-            return {"video": result.clamp(0, 1)}
-        finally:
-            self._busy_lock.release()
+        if video is not None and len(video) > 0:
+            result = self._generate_img2img(
+                prompt=prompt,
+                input_frames=video,
+                strength=strength,
+                width=output_width,
+                height=output_height,
+                guidance_scale=guidance_scale,
+                seed=seed,
+            )
+        else:
+            result = self._generate_text(
+                prompt=prompt,
+                width=output_width,
+                height=output_height,
+                guidance_scale=guidance_scale,
+                seed=seed,
+            )
+
+        # Cache result and params for next call's change detection
+        self._prev_output = result.detach().clone()
+        self._prev_params = current_params
+
+        return {"video": result.clamp(0, 1)}
 
     def _generate_text(
         self,
