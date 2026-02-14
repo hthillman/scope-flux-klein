@@ -26,7 +26,7 @@ class FluxKleinConfig(BasePipelineConfig):
 
     modes = {
         "text": ModeDefaults(default=True),
-        "video": ModeDefaults(height=512, width=512, noise_scale=0.7),
+        "video": ModeDefaults(height=384, width=384, noise_scale=0.7),
     }
 
     artifacts = [
@@ -55,12 +55,12 @@ class FluxKleinConfig(BasePipelineConfig):
     # --- Load-time parameters (require pipeline reload) ---
 
     num_inference_steps: int = Field(
-        default=4,
+        default=2,
         ge=1,
         le=8,
         description=(
             "Number of denoising steps per generation. Fewer steps = faster "
-            "but lower quality. FLUX Klein is optimized for 4 steps."
+            "but lower quality. FLUX Klein is optimized for 2-4 steps."
         ),
         json_schema_extra=ui_field_config(
             order=1,
@@ -70,10 +70,11 @@ class FluxKleinConfig(BasePipelineConfig):
     )
 
     enable_cpu_offload: bool = Field(
-        default=True,
+        default=False,
         description=(
             "Offload model components to CPU when not in use to save VRAM. "
-            "Recommended for GPUs with less than 16GB VRAM."
+            "Reduces per-frame speed significantly. Enable only if GPU has "
+            "less than 16GB VRAM."
         ),
         json_schema_extra=ui_field_config(
             order=2,
@@ -96,7 +97,7 @@ class FluxKleinConfig(BasePipelineConfig):
     )
 
     output_width: int = Field(
-        default=512,
+        default=384,
         ge=256,
         le=1024,
         description="Output image width in pixels. Lower = faster generation. Snapped to multiple of 16.",
@@ -104,7 +105,7 @@ class FluxKleinConfig(BasePipelineConfig):
     )
 
     output_height: int = Field(
-        default=512,
+        default=384,
         ge=256,
         le=1024,
         description="Output image height in pixels. Lower = faster generation. Snapped to multiple of 16.",

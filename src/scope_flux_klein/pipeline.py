@@ -1,7 +1,7 @@
 """FLUX Klein Realtime pipeline -- continuous image generation.
 
 Generates images in real-time using the FLUX.2-klein-4B model.
-Each call to __call__() runs a full inference pass (4 steps, ~0.5s),
+Each call to __call__() runs a full inference pass (2 steps by default),
 producing a fresh image from the current prompt. In video mode,
 the input frame conditions the generation via img2img.
 """
@@ -9,6 +9,7 @@ the input frame conditions the generation via img2img.
 from __future__ import annotations
 
 import logging
+import threading
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -50,8 +51,8 @@ class FluxKleinPipeline(Pipeline):
         )
 
         # Read load-time parameters
-        num_inference_steps = kwargs.get("num_inference_steps", 4)
-        enable_cpu_offload = kwargs.get("enable_cpu_offload", True)
+        num_inference_steps = kwargs.get("num_inference_steps", 2)
+        enable_cpu_offload = kwargs.get("enable_cpu_offload", False)
 
         # Load the FLUX model
         self.model = FluxKleinModel(
@@ -62,6 +63,10 @@ class FluxKleinPipeline(Pipeline):
 
         # Store previous output for temporal continuity
         self._prev_output: torch.Tensor | None = None
+
+        # Skip-if-busy: prevent queue overflow by returning cached frame
+        # when the previous generation hasn't finished yet
+        self._busy_lock = threading.Lock()
 
     def prepare(self, **kwargs) -> Requirements | None:
         """Declare input requirements based on current mode.
@@ -83,8 +88,8 @@ class FluxKleinPipeline(Pipeline):
         # Read runtime parameters
         prompt = kwargs.get("prompt", "")
         guidance_scale = kwargs.get("guidance_scale", 1.0)
-        output_width = kwargs.get("output_width", 512)
-        output_height = kwargs.get("output_height", 512)
+        output_width = kwargs.get("output_width", 384)
+        output_height = kwargs.get("output_height", 384)
         strength = kwargs.get("strength", 0.7)
         seed = kwargs.get("seed", -1)
         video = kwargs.get("video")
@@ -96,30 +101,41 @@ class FluxKleinPipeline(Pipeline):
             black = torch.zeros(1, output_height, output_width, 3)
             return {"video": black}
 
-        # Dispatch based on mode
-        if video is not None and len(video) > 0:
-            result = self._generate_img2img(
-                prompt=prompt,
-                input_frames=video,
-                strength=strength,
-                width=output_width,
-                height=output_height,
-                guidance_scale=guidance_scale,
-                seed=seed,
-            )
-        else:
-            result = self._generate_text(
-                prompt=prompt,
-                width=output_width,
-                height=output_height,
-                guidance_scale=guidance_scale,
-                seed=seed,
-            )
+        # Skip-if-busy: if still generating the previous frame, return
+        # the cached output immediately to prevent output queue overflow
+        if not self._busy_lock.acquire(blocking=False):
+            if self._prev_output is not None:
+                return {"video": self._prev_output}
+            black = torch.zeros(1, output_height, output_width, 3)
+            return {"video": black}
 
-        # Store for temporal continuity
-        self._prev_output = result.detach().clone()
+        try:
+            # Dispatch based on mode
+            if video is not None and len(video) > 0:
+                result = self._generate_img2img(
+                    prompt=prompt,
+                    input_frames=video,
+                    strength=strength,
+                    width=output_width,
+                    height=output_height,
+                    guidance_scale=guidance_scale,
+                    seed=seed,
+                )
+            else:
+                result = self._generate_text(
+                    prompt=prompt,
+                    width=output_width,
+                    height=output_height,
+                    guidance_scale=guidance_scale,
+                    seed=seed,
+                )
 
-        return {"video": result.clamp(0, 1)}
+            # Store for temporal continuity
+            self._prev_output = result.detach().clone()
+
+            return {"video": result.clamp(0, 1)}
+        finally:
+            self._busy_lock.release()
 
     def _generate_text(
         self,
