@@ -87,6 +87,13 @@ class FluxKleinPipeline(Pipeline):
         seed = kwargs.get("seed", -1)
         video = kwargs.get("video")
 
+        logger.info(
+            "FluxKlein __call__: prompt=%r, video=%s, kwargs_keys=%s",
+            prompt[:80] if prompt else "(empty)",
+            "yes" if video else "no",
+            list(kwargs.keys()),
+        )
+
         # If prompt is empty, return previous output or black frame
         if not prompt.strip():
             if self._prev_output is not None:
@@ -113,6 +120,13 @@ class FluxKleinPipeline(Pipeline):
                 guidance_scale=guidance_scale,
                 seed=seed,
             )
+
+        # Log tensor stats for debugging
+        logger.info(
+            "FluxKlein result: shape=%s, dtype=%s, min=%.4f, max=%.4f, mean=%.4f",
+            result.shape, result.dtype, result.min().item(),
+            result.max().item(), result.mean().item(),
+        )
 
         # Store for temporal continuity
         self._prev_output = result.detach().clone()
