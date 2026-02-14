@@ -26,7 +26,7 @@ class FluxKleinConfig(BasePipelineConfig):
 
     modes = {
         "text": ModeDefaults(default=True),
-        "video": ModeDefaults(height=1024, width=1024, noise_scale=0.7),
+        "video": ModeDefaults(height=512, width=512, noise_scale=0.7),
     }
 
     artifacts = [
@@ -96,18 +96,18 @@ class FluxKleinConfig(BasePipelineConfig):
     )
 
     output_width: int = Field(
-        default=1024,
-        ge=512,
+        default=512,
+        ge=256,
         le=1024,
-        description="Output image width in pixels. Snapped to nearest multiple of 16.",
+        description="Output image width in pixels. Lower = faster generation. Snapped to multiple of 16.",
         json_schema_extra=ui_field_config(order=11, label="Width"),
     )
 
     output_height: int = Field(
-        default=1024,
-        ge=512,
+        default=512,
+        ge=256,
         le=1024,
-        description="Output image height in pixels. Snapped to nearest multiple of 16.",
+        description="Output image height in pixels. Lower = faster generation. Snapped to multiple of 16.",
         json_schema_extra=ui_field_config(order=12, label="Height"),
     )
 

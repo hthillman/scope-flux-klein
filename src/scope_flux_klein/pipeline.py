@@ -30,7 +30,9 @@ class FluxKleinPipeline(Pipeline):
 
     Supports two modes:
     - Text mode: Generates images purely from text prompts.
-    - Video mode: Uses input video frames as conditioning for img2img.
+    - Video mode: Uses input video/canvas frames as conditioning for img2img.
+      Connect a camera OR the drawing canvas as the video source to draw
+      and have FLUX transform your sketch in real-time.
 
     Called continuously during streaming. Each invocation runs a full
     FLUX inference pass and returns a single-frame output.
@@ -81,18 +83,11 @@ class FluxKleinPipeline(Pipeline):
         # Read runtime parameters
         prompt = kwargs.get("prompt", "")
         guidance_scale = kwargs.get("guidance_scale", 1.0)
-        output_width = kwargs.get("output_width", 1024)
-        output_height = kwargs.get("output_height", 1024)
+        output_width = kwargs.get("output_width", 512)
+        output_height = kwargs.get("output_height", 512)
         strength = kwargs.get("strength", 0.7)
         seed = kwargs.get("seed", -1)
         video = kwargs.get("video")
-
-        logger.info(
-            "FluxKlein __call__: prompt=%r, video=%s, kwargs_keys=%s",
-            prompt[:80] if prompt else "(empty)",
-            "yes" if video else "no",
-            list(kwargs.keys()),
-        )
 
         # If prompt is empty, return previous output or black frame
         if not prompt.strip():
@@ -120,13 +115,6 @@ class FluxKleinPipeline(Pipeline):
                 guidance_scale=guidance_scale,
                 seed=seed,
             )
-
-        # Log tensor stats for debugging
-        logger.info(
-            "FluxKlein result: shape=%s, dtype=%s, min=%.4f, max=%.4f, mean=%.4f",
-            result.shape, result.dtype, result.min().item(),
-            result.max().item(), result.mean().item(),
-        )
 
         # Store for temporal continuity
         self._prev_output = result.detach().clone()
