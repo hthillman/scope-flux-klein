@@ -40,9 +40,8 @@ class FluxKleinModel:
             from diffusers import Flux2KleinPipeline
         except ImportError:
             raise ImportError(
-                "Flux2KleinPipeline not found in diffusers. "
-                "Please install a recent version: "
-                "pip install diffusers>=0.33.0 or "
+                "Flux2KleinPipeline not found in your version of diffusers. "
+                "This model requires diffusers >= 0.37.0.dev0. Install from git: "
                 "pip install git+https://github.com/huggingface/diffusers.git"
             )
 
