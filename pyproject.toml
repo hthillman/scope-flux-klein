@@ -14,5 +14,8 @@ scope_flux_klein = "scope_flux_klein"
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[tool.hatch.metadata]
+allow-direct-references = true
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/scope_flux_klein"]
