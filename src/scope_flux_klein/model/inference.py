@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import sys
+from types import ModuleType
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -13,6 +15,36 @@ if TYPE_CHECKING:
     from diffusers import Flux2KleinPipeline
 
 logger = logging.getLogger(__name__)
+
+
+def _patch_sageattention():
+    """Stub out sageattention to prevent broken C extension from loading.
+
+    Scope's container has sageattention compiled against a newer glibc
+    than available (GLIBCXX_3.4.32). We inject dummy modules into
+    sys.modules so diffusers' eager import check finds our harmless
+    stub instead of the broken native extension.
+    """
+    if "sageattention" in sys.modules:
+        return  # Already loaded (or stubbed), don't override
+
+    stub = ModuleType("sageattention")
+    fused_stub = ModuleType("sageattention._fused")
+
+    # Add the attributes that diffusers.models.attention_dispatch tries to import
+    for attr in [
+        "sageattn",
+        "sageattn_qk_int8_pv_fp8_cuda",
+        "sageattn_qk_int8_pv_fp8_cuda_sm90",
+        "sageattn_qk_int8_pv_fp16_cuda",
+        "sageattn_qk_int8_pv_fp16_triton",
+        "sageattn_varlen",
+    ]:
+        setattr(stub, attr, None)
+
+    stub._fused = fused_stub
+    sys.modules["sageattention"] = stub
+    sys.modules["sageattention._fused"] = fused_stub
 
 
 class FluxKleinModel:
@@ -35,6 +67,9 @@ class FluxKleinModel:
         self.num_inference_steps = num_inference_steps
 
         logger.info("Loading FLUX.2-klein-4B from %s", model_id)
+
+        # Must patch before importing diffusers to avoid broken sageattention C extension
+        _patch_sageattention()
 
         try:
             from diffusers import Flux2KleinPipeline
