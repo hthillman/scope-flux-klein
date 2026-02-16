@@ -85,6 +85,18 @@ class FluxKleinConfig(BasePipelineConfig):
 
     # --- Runtime parameters (adjustable during streaming) ---
 
+    feedback_strength: float = Field(
+        default=0.4,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Strength for feedback loop. When > 0, each frame edits the "
+            "previous output instead of generating from scratch (Krea-style). "
+            "Lower = faster, smoother transitions. 0 = full regeneration each frame."
+        ),
+        json_schema_extra=ui_field_config(order=9, label="Feedback Strength"),
+    )
+
     guidance_scale: float = Field(
         default=1.0,
         ge=0.0,

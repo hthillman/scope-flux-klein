@@ -173,6 +173,16 @@ class FluxKleinModel:
         return self._pil_to_thwc_tensor(result.images[0])
 
     @staticmethod
+    def _thwc_tensor_to_pil(tensor: torch.Tensor) -> Image.Image:
+        """Convert a THWC tensor in [0, 1] range back to a PIL Image.
+
+        Args:
+            tensor: Shape (1, H, W, 3), float32, range [0, 1].
+        """
+        arr = (tensor.squeeze(0).clamp(0, 1).cpu().numpy() * 255).astype(np.uint8)
+        return Image.fromarray(arr, mode="RGB")
+
+    @staticmethod
     def _pil_to_thwc_tensor(image: Image.Image) -> torch.Tensor:
         """Convert a PIL Image to a THWC tensor in [0, 1] range.
 
