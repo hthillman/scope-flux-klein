@@ -88,10 +88,11 @@ class FluxKleinPipeline(Pipeline):
         """
         # Diagnostic: print to stdout (logger.info gets filtered by Scope)
         print(
-            f"[FLUX-KLEIN] has_prev={self._prev_output is not None} "
+            f"[FLUX-KLEIN] input_mode={kwargs.get('input_mode')!r} "
+            f"has_prev={self._prev_output is not None} "
             f"fb_str={kwargs.get('feedback_strength')!r} "
-            f"prompt={bool(kwargs.get('prompts'))} "
-            f"video={kwargs.get('video') is not None}",
+            f"video={kwargs.get('video') is not None} "
+            f"video_len={len(kwargs.get('video', []))}",
             flush=True,
         )
 
@@ -104,22 +105,45 @@ class FluxKleinPipeline(Pipeline):
         guidance_scale = kwargs.get("guidance_scale", 1.0)
         output_width = kwargs.get("output_width", 384)
         output_height = kwargs.get("output_height", 384)
-        feedback_strength = kwargs.get("feedback_strength", 0.3)
+        feedback_strength = kwargs.get("feedback_strength")
+        if feedback_strength is None:
+            feedback_strength = 0.3
         seed = kwargs.get("seed", -1)
         video = kwargs.get("video")
 
-        # --- Video mode: always use input frame as img2img source ---
+        # --- Video mode: use input frame for generation ---
         # Check video FIRST — video mode should work even with empty prompt
         if video is not None and len(video) > 0:
-            print("[FLUX-KLEIN] BRANCH: video img2img", flush=True)
-            result = self._generate_img2img(
-                prompt=prompt if prompt.strip() else "high quality image",
-                input_frames=video,
-                width=output_width,
-                height=output_height,
-                guidance_scale=guidance_scale,
-                seed=seed,
-            )
+            effective_prompt = prompt if prompt.strip() else "high quality image"
+
+            # After first frame, use partial denoising on the input video frame
+            # for speed (Krea trick). First frame needs full inference.
+            if self._prev_output is not None and feedback_strength > 0:
+                print(
+                    f"[FLUX-KLEIN] BRANCH: video refine_frame "
+                    f"(strength={feedback_strength})",
+                    flush=True,
+                )
+                input_pil = self._video_frame_to_pil(video)
+                result = self.model.refine_frame(
+                    prompt=effective_prompt,
+                    previous_image=input_pil,
+                    width=output_width,
+                    height=output_height,
+                    guidance_scale=guidance_scale,
+                    seed=seed,
+                    strength=feedback_strength,
+                )
+            else:
+                print("[FLUX-KLEIN] BRANCH: video img2img (full)", flush=True)
+                result = self._generate_img2img(
+                    prompt=effective_prompt,
+                    input_frames=video,
+                    width=output_width,
+                    height=output_height,
+                    guidance_scale=guidance_scale,
+                    seed=seed,
+                )
 
         # --- Text mode: need a prompt ---
         elif not prompt.strip():
@@ -183,6 +207,17 @@ class FluxKleinPipeline(Pipeline):
             seed=seed,
         )
 
+    @staticmethod
+    def _video_frame_to_pil(video: list) -> Image.Image:
+        """Convert the first Scope video frame tensor to a PIL Image."""
+        frame = video[0].squeeze(0)  # (H, W, C)
+        frame_np = frame.cpu().numpy()
+        if frame_np.max() > 1.0:
+            frame_np = frame_np.clip(0, 255).astype(np.uint8)
+        else:
+            frame_np = (frame_np * 255).clip(0, 255).astype(np.uint8)
+        return Image.fromarray(frame_np, mode="RGB")
+
     def _generate_img2img(
         self,
         prompt: str,
@@ -198,17 +233,7 @@ class FluxKleinPipeline(Pipeline):
         — no strength parameter. The image guides generation but full
         inference runs every time.
         """
-        # Extract the first input frame: (1, H, W, C) in [0, 255]
-        frame = input_frames[0].squeeze(0)  # (H, W, C)
-
-        # Convert to PIL Image
-        frame_np = frame.cpu().numpy()
-        if frame_np.max() > 1.0:
-            frame_np = frame_np.clip(0, 255).astype(np.uint8)
-        else:
-            frame_np = (frame_np * 255).clip(0, 255).astype(np.uint8)
-
-        pil_image = Image.fromarray(frame_np, mode="RGB")
+        pil_image = self._video_frame_to_pil(input_frames)
 
         return self.model.image_to_image(
             prompt=prompt,
