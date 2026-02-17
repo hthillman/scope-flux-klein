@@ -87,7 +87,13 @@ class FluxKleinPipeline(Pipeline):
         faster and produces smooth continuous output.
         """
         # Diagnostic: print to stdout (logger.info gets filtered by Scope)
-        print(f"[FLUX-KLEIN] prompts={kwargs.get('prompts')!r}", flush=True)
+        print(
+            f"[FLUX-KLEIN] has_prev={self._prev_output is not None} "
+            f"fb_str={kwargs.get('feedback_strength')!r} "
+            f"prompt={bool(kwargs.get('prompts'))} "
+            f"video={kwargs.get('video') is not None}",
+            flush=True,
+        )
 
         # Scope sends "prompts" (plural) — extract the first prompt string
         prompts = kwargs.get("prompts")
@@ -105,6 +111,7 @@ class FluxKleinPipeline(Pipeline):
         # --- Video mode: always use input frame as img2img source ---
         # Check video FIRST — video mode should work even with empty prompt
         if video is not None and len(video) > 0:
+            print("[FLUX-KLEIN] BRANCH: video img2img", flush=True)
             result = self._generate_img2img(
                 prompt=prompt if prompt.strip() else "high quality image",
                 input_frames=video,
@@ -116,6 +123,7 @@ class FluxKleinPipeline(Pipeline):
 
         # --- Text mode: need a prompt ---
         elif not prompt.strip():
+            print("[FLUX-KLEIN] BRANCH: no prompt, returning cached/black", flush=True)
             # No prompt and no video — return cached or black
             if self._prev_output is not None:
                 return {"video": self._prev_output}
@@ -123,6 +131,7 @@ class FluxKleinPipeline(Pipeline):
 
         # --- Text mode with feedback loop (Krea-style partial denoise) ---
         elif self._prev_output is not None and feedback_strength > 0:
+            print(f"[FLUX-KLEIN] BRANCH: refine_frame (strength={feedback_strength})", flush=True)
             # Partial denoise: encode prev output, add noise, denoise fewer steps
             prev_pil = self.model._thwc_tensor_to_pil(self._prev_output)
             result = self.model.refine_frame(
@@ -137,6 +146,7 @@ class FluxKleinPipeline(Pipeline):
 
         # --- Text mode, first frame or feedback disabled ---
         else:
+            print("[FLUX-KLEIN] BRANCH: text_to_image (full inference)", flush=True)
             result = self._generate_text(
                 prompt=prompt,
                 width=output_width,
