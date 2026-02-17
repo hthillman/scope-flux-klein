@@ -107,7 +107,7 @@ class FluxKleinPipeline(Pipeline):
         output_height = kwargs.get("output_height", 384)
         feedback_strength = kwargs.get("feedback_strength")
         if feedback_strength is None:
-            feedback_strength = 0.3
+            feedback_strength = 0.5
         seed = kwargs.get("seed", -1)
         video = kwargs.get("video")
 
@@ -116,18 +116,23 @@ class FluxKleinPipeline(Pipeline):
         if video is not None and len(video) > 0:
             effective_prompt = prompt if prompt.strip() else "high quality image"
 
-            # After first frame, use partial denoising on the input video frame
-            # for speed (Krea trick). First frame needs full inference.
+            # After first frame, use partial denoising for speed (Krea trick).
+            # Blend previous Flux output with new video frame so the model
+            # refines an image that already has prompt influence, rather than
+            # denoising the raw camera feed (which ignores the prompt).
             if self._prev_output is not None and feedback_strength > 0:
                 print(
                     f"[FLUX-KLEIN] BRANCH: video refine_frame "
                     f"(strength={feedback_strength})",
                     flush=True,
                 )
-                input_pil = self._video_frame_to_pil(video)
+                # Blend: 50% previous Flux output + 50% new video frame
+                video_pil = self._video_frame_to_pil(video)
+                prev_pil = self.model._thwc_tensor_to_pil(self._prev_output)
+                blended = Image.blend(prev_pil.resize(video_pil.size), video_pil, 0.5)
                 result = self.model.refine_frame(
                     prompt=effective_prompt,
-                    previous_image=input_pil,
+                    previous_image=blended,
                     width=output_width,
                     height=output_height,
                     guidance_scale=guidance_scale,

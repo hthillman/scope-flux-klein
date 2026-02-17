@@ -87,7 +87,7 @@ class FluxKleinConfig(BasePipelineConfig):
     # --- Runtime parameters (adjustable during streaming) ---
 
     feedback_strength: float = Field(
-        default=0.3,
+        default=0.5,
         ge=0.0,
         le=1.0,
         description=(
