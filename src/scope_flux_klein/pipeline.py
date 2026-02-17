@@ -87,10 +87,14 @@ class FluxKleinPipeline(Pipeline):
         faster and produces smooth continuous output.
         """
         # Diagnostic: print to stdout (logger.info gets filtered by Scope)
-        print(f"[FLUX-KLEIN] __call__ prompt={kwargs.get('prompt')!r} keys={list(kwargs.keys())}", flush=True)
+        print(f"[FLUX-KLEIN] prompts={kwargs.get('prompts')!r}", flush=True)
 
-        # Read runtime parameters
-        prompt = kwargs.get("prompt", "")
+        # Scope sends "prompts" (plural) — extract the first prompt string
+        prompts = kwargs.get("prompts")
+        if prompts and len(prompts) > 0:
+            prompt = prompts[0] if isinstance(prompts[0], str) else str(prompts[0])
+        else:
+            prompt = kwargs.get("prompt", "")
         guidance_scale = kwargs.get("guidance_scale", 1.0)
         output_width = kwargs.get("output_width", 384)
         output_height = kwargs.get("output_height", 384)
