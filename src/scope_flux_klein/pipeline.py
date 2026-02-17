@@ -86,11 +86,8 @@ class FluxKleinPipeline(Pipeline):
         then each subsequent frame "edits" the previous output via img2img. This is
         faster and produces smooth continuous output.
         """
-        # Diagnostic: log all kwargs so we can see what Scope sends
-        logger.info(
-            "__call__ kwargs: %s",
-            {k: (type(v).__name__, v) if not isinstance(v, (torch.Tensor, list)) else type(v).__name__ for k, v in kwargs.items()},
-        )
+        # Diagnostic: print to stdout (logger.info gets filtered by Scope)
+        print(f"[FLUX-KLEIN] __call__ prompt={kwargs.get('prompt')!r} keys={list(kwargs.keys())}", flush=True)
 
         # Read runtime parameters
         prompt = kwargs.get("prompt", "")
