@@ -93,15 +93,6 @@ class FluxKleinModel:
         else:
             self.pipe = self.pipe.to(self.device)
 
-        # torch.compile the transformer for ~20-40% speedup after warmup
-        try:
-            self.pipe.transformer = torch.compile(
-                self.pipe.transformer, mode="reduce-overhead",
-            )
-            print("[FLUX-KLEIN] torch.compile applied to transformer", flush=True)
-        except Exception as e:
-            print(f"[FLUX-KLEIN] torch.compile failed ({e}), running uncompiled", flush=True)
-
         logger.info("FLUX.2-klein-4B loaded successfully")
 
         # Prompt embedding cache — Qwen3 encoding is expensive, reuse across frames
