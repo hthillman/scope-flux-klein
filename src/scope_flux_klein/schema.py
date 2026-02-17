@@ -26,7 +26,7 @@ class FluxKleinConfig(BasePipelineConfig):
 
     modes = {
         "text": ModeDefaults(default=True),
-        "video": ModeDefaults(height=384, width=384, noise_scale=0.7),
+        "video": ModeDefaults(height=384, width=384),
     }
 
     artifacts = [
@@ -122,21 +122,6 @@ class FluxKleinConfig(BasePipelineConfig):
         le=1024,
         description="Output image height in pixels. Lower = faster generation. Snapped to multiple of 16.",
         json_schema_extra=ui_field_config(order=12, label="Height"),
-    )
-
-    strength: float = Field(
-        default=0.7,
-        ge=0.0,
-        le=1.0,
-        description=(
-            "How much to transform the input image in video (img2img) mode. "
-            "0.0 = no change, 1.0 = fully regenerate ignoring input."
-        ),
-        json_schema_extra=ui_field_config(
-            order=20,
-            label="Strength",
-            modes=["video"],
-        ),
     )
 
     seed: int = Field(

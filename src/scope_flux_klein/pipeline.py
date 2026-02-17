@@ -97,7 +97,6 @@ class FluxKleinPipeline(Pipeline):
         guidance_scale = kwargs.get("guidance_scale", 1.0)
         output_width = kwargs.get("output_width", 384)
         output_height = kwargs.get("output_height", 384)
-        strength = kwargs.get("strength", 0.7)
         feedback_strength = kwargs.get("feedback_strength", 0.4)
         seed = kwargs.get("seed", -1)
         video = kwargs.get("video")
@@ -108,7 +107,6 @@ class FluxKleinPipeline(Pipeline):
             result = self._generate_img2img(
                 prompt=prompt if prompt.strip() else "high quality image",
                 input_frames=video,
-                strength=strength,
                 width=output_width,
                 height=output_height,
                 guidance_scale=guidance_scale,
@@ -129,7 +127,6 @@ class FluxKleinPipeline(Pipeline):
             result = self.model.image_to_image(
                 prompt=prompt,
                 image=prev_pil,
-                strength=feedback_strength,
                 width=output_width,
                 height=output_height,
                 guidance_scale=guidance_scale,
@@ -178,13 +175,17 @@ class FluxKleinPipeline(Pipeline):
         self,
         prompt: str,
         input_frames: list,
-        strength: float,
         width: int,
         height: int,
         guidance_scale: float,
         seed: int,
     ) -> torch.Tensor:
-        """Generate an image conditioned on an input frame."""
+        """Generate an image conditioned on an input frame.
+
+        Flux2KleinPipeline uses the image as conditioning via joint attention
+        — no strength parameter. The image guides generation but full
+        inference runs every time.
+        """
         # Extract the first input frame: (1, H, W, C) in [0, 255]
         frame = input_frames[0].squeeze(0)  # (H, W, C)
 
@@ -200,7 +201,6 @@ class FluxKleinPipeline(Pipeline):
         return self.model.image_to_image(
             prompt=prompt,
             image=pil_image,
-            strength=strength,
             width=width,
             height=height,
             guidance_scale=guidance_scale,

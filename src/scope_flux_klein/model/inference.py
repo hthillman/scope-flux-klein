@@ -140,13 +140,16 @@ class FluxKleinModel:
         self,
         prompt: str,
         image: Image.Image,
-        strength: float = 0.7,
         width: int = 1024,
         height: int = 1024,
         guidance_scale: float = 1.0,
         seed: int = -1,
     ) -> torch.Tensor:
         """Generate an image conditioned on an input image and prompt.
+
+        Flux2KleinPipeline uses the image as conditioning via joint attention
+        concatenation — there is no strength parameter. The image guides the
+        generation but full inference always runs.
 
         Returns:
             Tensor of shape (1, H, W, 3) in [0, 1] range, float32.
@@ -162,7 +165,6 @@ class FluxKleinModel:
         result = self.pipe(
             prompt=prompt,
             image=image,
-            strength=strength,
             width=width,
             height=height,
             guidance_scale=guidance_scale,
