@@ -119,7 +119,7 @@ class FluxKleinPipeline(Pipeline):
                 # Blend in tensor space: 50% prev output + 50% video frame
                 # Both are THWC [0,1] — blend then convert to BCHW [-1,1]
                 video_thwc = self._video_frame_to_thwc(video, output_width, output_height)
-                prev_thwc = self._prev_output
+                prev_thwc = self._prev_output.to(video_thwc.device)
                 if prev_thwc.shape[1:3] != video_thwc.shape[1:3]:
                     prev_thwc = torch.nn.functional.interpolate(
                         prev_thwc.permute(0, 3, 1, 2),
