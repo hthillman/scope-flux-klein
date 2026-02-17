@@ -141,7 +141,13 @@ class FluxKleinPipeline(Pipeline):
         # Cache result for feedback loop
         self._prev_output = result.detach().clone()
 
-        return {"video": result.clamp(0, 1)}
+        clamped = result.clamp(0, 1)
+        logger.info(
+            "Output: shape=%s dtype=%s device=%s min=%.4f max=%.4f mean=%.4f",
+            clamped.shape, clamped.dtype, clamped.device,
+            clamped.min().item(), clamped.max().item(), clamped.mean().item(),
+        )
+        return {"video": clamped}
 
     def _generate_text(
         self,
