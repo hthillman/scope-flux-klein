@@ -86,16 +86,6 @@ class FluxKleinPipeline(Pipeline):
         then each subsequent frame "edits" the previous output via img2img. This is
         faster and produces smooth continuous output.
         """
-        # Diagnostic: print to stdout (logger.info gets filtered by Scope)
-        print(
-            f"[FLUX-KLEIN] input_mode={kwargs.get('input_mode')!r} "
-            f"has_prev={self._prev_output is not None} "
-            f"fb_str={kwargs.get('feedback_strength')!r} "
-            f"video={kwargs.get('video') is not None} "
-            f"video_len={len(kwargs.get('video', []))}",
-            flush=True,
-        )
-
         # Scope sends "prompts" (plural) — extract the first prompt string
         prompts = kwargs.get("prompts")
         if prompts and len(prompts) > 0:
@@ -126,13 +116,25 @@ class FluxKleinPipeline(Pipeline):
                     f"(strength={feedback_strength})",
                     flush=True,
                 )
-                # Blend: 50% previous Flux output + 50% new video frame
-                video_pil = self._video_frame_to_pil(video)
-                prev_pil = self.model._thwc_tensor_to_pil(self._prev_output)
-                blended = Image.blend(prev_pil.resize(video_pil.size), video_pil, 0.5)
+                # Blend in tensor space: 50% prev output + 50% video frame
+                # Both are THWC [0,1] — blend then convert to BCHW [-1,1]
+                video_thwc = self._video_frame_to_thwc(video, output_width, output_height)
+                prev_thwc = self._prev_output
+                if prev_thwc.shape[1:3] != video_thwc.shape[1:3]:
+                    prev_thwc = torch.nn.functional.interpolate(
+                        prev_thwc.permute(0, 3, 1, 2),
+                        size=(video_thwc.shape[1], video_thwc.shape[2]),
+                        mode="bilinear", align_corners=False,
+                    ).permute(0, 2, 3, 1)
+                blended_thwc = 0.5 * prev_thwc + 0.5 * video_thwc
+
+                # Convert THWC [0,1] → BCHW [-1,1] for direct VAE input
+                blended_bchw = blended_thwc.squeeze(0).permute(2, 0, 1).unsqueeze(0)
+                blended_bchw = (blended_bchw * 2.0 - 1.0).to(torch.float16)
+
                 result = self.model.refine_frame(
                     prompt=effective_prompt,
-                    previous_image=blended,
+                    previous_image=blended_bchw,
                     width=output_width,
                     height=output_height,
                     guidance_scale=guidance_scale,
@@ -161,11 +163,12 @@ class FluxKleinPipeline(Pipeline):
         # --- Text mode with feedback loop (Krea-style partial denoise) ---
         elif self._prev_output is not None and feedback_strength > 0:
             print(f"[FLUX-KLEIN] BRANCH: refine_frame (strength={feedback_strength})", flush=True)
-            # Partial denoise: encode prev output, add noise, denoise fewer steps
-            prev_pil = self.model._thwc_tensor_to_pil(self._prev_output)
+            # Convert prev THWC [0,1] → BCHW [-1,1] for direct VAE input
+            prev_bchw = self._prev_output.squeeze(0).permute(2, 0, 1).unsqueeze(0)
+            prev_bchw = (prev_bchw * 2.0 - 1.0).to(torch.float16)
             result = self.model.refine_frame(
                 prompt=prompt,
-                previous_image=prev_pil,
+                previous_image=prev_bchw,
                 width=output_width,
                 height=output_height,
                 guidance_scale=guidance_scale,
@@ -188,11 +191,6 @@ class FluxKleinPipeline(Pipeline):
         self._prev_output = result.detach().clone()
 
         clamped = result.clamp(0, 1)
-        logger.info(
-            "Output: shape=%s dtype=%s device=%s min=%.4f max=%.4f mean=%.4f",
-            clamped.shape, clamped.dtype, clamped.device,
-            clamped.min().item(), clamped.max().item(), clamped.mean().item(),
-        )
         return {"video": clamped}
 
     def _generate_text(
@@ -211,6 +209,28 @@ class FluxKleinPipeline(Pipeline):
             guidance_scale=guidance_scale,
             seed=seed,
         )
+
+    @staticmethod
+    def _video_frame_to_thwc(
+        video: list, width: int, height: int,
+    ) -> torch.Tensor:
+        """Convert the first Scope video frame tensor to THWC [0,1].
+
+        Returns:
+            Tensor of shape (1, H, W, 3) in [0, 1] range, float32.
+        """
+        frame = video[0].squeeze(0).float()  # (H, W, C)
+        if frame.max() > 1.0:
+            frame = frame / 255.0
+        frame = frame.clamp(0, 1).unsqueeze(0)  # (1, H, W, C)
+        # Resize if needed
+        if frame.shape[1] != height or frame.shape[2] != width:
+            frame = torch.nn.functional.interpolate(
+                frame.permute(0, 3, 1, 2),
+                size=(height, width),
+                mode="bilinear", align_corners=False,
+            ).permute(0, 2, 3, 1)
+        return frame
 
     @staticmethod
     def _video_frame_to_pil(video: list) -> Image.Image:

@@ -84,7 +84,7 @@ class FluxKleinModel:
 
         self.pipe: Flux2KleinPipeline = Flux2KleinPipeline.from_pretrained(
             model_id,
-            torch_dtype=torch.bfloat16,
+            torch_dtype=torch.float16,
         )
 
         if enable_cpu_offload:
@@ -93,12 +93,48 @@ class FluxKleinModel:
         else:
             self.pipe = self.pipe.to(self.device)
 
+        # torch.compile the transformer for ~20-40% speedup after warmup
+        try:
+            self.pipe.transformer = torch.compile(
+                self.pipe.transformer, mode="reduce-overhead",
+            )
+            print("[FLUX-KLEIN] torch.compile applied to transformer", flush=True)
+        except Exception as e:
+            print(f"[FLUX-KLEIN] torch.compile failed ({e}), running uncompiled", flush=True)
+
         logger.info("FLUX.2-klein-4B loaded successfully")
 
         # Prompt embedding cache — Qwen3 encoding is expensive, reuse across frames
         self._cached_prompt_str: str | None = None
         self._cached_prompt_embeds: torch.Tensor | None = None
         self._cached_text_ids: torch.Tensor | None = None
+
+        # VAE BN stats cache — constant after model load, avoid recomputing
+        self._bn_mean: torch.Tensor | None = None
+        self._bn_std: torch.Tensor | None = None
+
+        # Latent shape cache — avoids recomputing latent_ids when resolution is stable
+        self._cached_latent_shape: tuple | None = None
+        self._cached_latent_ids: torch.Tensor | None = None
+
+    def _get_bn_stats(self, device: torch.device, dtype: torch.dtype):
+        """Get cached VAE batch-norm stats (constant after model load)."""
+        if self._bn_mean is None:
+            self._bn_mean = self.pipe.vae.bn.running_mean.view(1, -1, 1, 1).to(device, dtype)
+            self._bn_std = torch.sqrt(
+                self.pipe.vae.bn.running_var.view(1, -1, 1, 1).to(device, dtype)
+                + self.pipe.vae.config.batch_norm_eps
+            )
+        return self._bn_mean, self._bn_std
+
+    def _get_latent_ids(self, latent_shape: tuple, device: torch.device):
+        """Get cached latent position IDs (stable when resolution doesn't change)."""
+        if self._cached_latent_shape != latent_shape:
+            # _prepare_latent_ids expects a tensor with the right spatial dims
+            dummy = torch.empty(latent_shape)
+            self._cached_latent_ids = self.pipe._prepare_latent_ids(dummy).to(device)
+            self._cached_latent_shape = latent_shape
+        return self._cached_latent_ids
 
     def _make_generator(self, seed: int) -> torch.Generator | None:
         """Create a torch Generator for the given seed, or None for random."""
@@ -185,12 +221,12 @@ class FluxKleinModel:
     def refine_frame(
         self,
         prompt: str,
-        previous_image: Image.Image,
+        previous_image: Image.Image | torch.Tensor,
         width: int = 384,
         height: int = 384,
         guidance_scale: float = 1.0,
         seed: int = -1,
-        strength: float = 0.3,
+        strength: float = 0.5,
     ) -> torch.Tensor:
         """Partial-denoise the previous output for fast feedback (Krea trick).
 
@@ -200,8 +236,8 @@ class FluxKleinModel:
         3. Denoises for only the remaining steps
         4. Decodes back to pixels
 
-        With strength=0.3 and 4 steps, only ~1-2 transformer passes run
-        instead of 4, roughly doubling FPS on subsequent frames.
+        previous_image can be a PIL Image or a BCHW float16 tensor in [-1, 1]
+        (pre-processed, to skip the PIL→tensor conversion).
 
         Returns:
             Tensor of shape (1, H, W, 3) in [0, 1] range, float32.
@@ -229,13 +265,17 @@ class FluxKleinModel:
         prompt_embeds = self._cached_prompt_embeds
         text_ids = self._cached_text_ids
 
-        # --- 2. Encode previous image to latents ---
-        # Resize and preprocess to tensor in [-1, 1]
-        previous_image = previous_image.resize((width, height), Image.LANCZOS)
-        image_tensor = self.pipe.image_processor.preprocess(
-            previous_image, height=height, width=width,
-        )
-        image_tensor = image_tensor.to(device=device, dtype=dtype)
+        # --- 2. Encode image to latents ---
+        if isinstance(previous_image, torch.Tensor):
+            # Already preprocessed BCHW tensor in [-1, 1]
+            image_tensor = previous_image.to(device=device, dtype=dtype)
+        else:
+            # PIL path
+            previous_image = previous_image.resize((width, height), Image.LANCZOS)
+            image_tensor = self.pipe.image_processor.preprocess(
+                previous_image, height=height, width=width,
+            )
+            image_tensor = image_tensor.to(device=device, dtype=dtype)
 
         # VAE encode → raw latents (B, 32, H/8, W/8)
         image_latents = self.pipe.vae.encode(image_tensor).latent_dist.mode()
@@ -243,23 +283,17 @@ class FluxKleinModel:
         # Patchify: (B, 32, H/8, W/8) → (B, 128, H/16, W/16)
         image_latents = self.pipe._patchify_latents(image_latents)
 
-        # BN normalize
-        bn_mean = self.pipe.vae.bn.running_mean.view(1, -1, 1, 1).to(device, dtype)
-        bn_std = torch.sqrt(
-            self.pipe.vae.bn.running_var.view(1, -1, 1, 1).to(device, dtype)
-            + self.pipe.vae.config.batch_norm_eps
-        )
+        # BN normalize (cached stats)
+        bn_mean, bn_std = self._get_bn_stats(device, dtype)
         image_latents = (image_latents - bn_mean) / bn_std
 
-        # Prepare position IDs from patchified spatial shape
-        latent_ids = self.pipe._prepare_latent_ids(image_latents).to(device)
+        # Prepare position IDs (cached when resolution is stable)
+        latent_ids = self._get_latent_ids(image_latents.shape, device)
 
         # Pack: (B, 128, H', W') → (B, H'*W', 128)
         clean_latents = self.pipe._pack_latents(image_latents)
 
         # --- 3. Set up truncated schedule ---
-        # Flux2Klein uses dynamic shifting — mu must be computed from
-        # the packed sequence length (same as Flux2KleinPipeline.__call__)
         image_seq_len = clean_latents.shape[1]
         from diffusers.pipelines.flux2.pipeline_flux2_klein import compute_empirical_mu
         mu = compute_empirical_mu(image_seq_len, self.num_inference_steps)
@@ -281,6 +315,10 @@ class FluxKleinModel:
 
         if num_steps == 0:
             # strength ~0: no denoising needed, return input as-is
+            if isinstance(previous_image, torch.Tensor):
+                # Decode the tensor back
+                pixel = (previous_image.clamp(-1, 1) + 1) / 2  # [-1,1] → [0,1]
+                return pixel.squeeze(0).permute(1, 2, 0).unsqueeze(0).float().cpu()
             return self._pil_to_thwc_tensor(previous_image)
 
         # --- 4. Add noise at starting sigma ---
@@ -296,7 +334,6 @@ class FluxKleinModel:
 
         # --- 5. Run transformer for remaining steps ---
         do_cfg = guidance_scale > 1.0
-        image_seq_len = latents.shape[1]
 
         for t in timesteps:
             timestep = t.expand(latents.shape[0]).to(latents.dtype)
@@ -312,7 +349,6 @@ class FluxKleinModel:
                     return_dict=False,
                 )[0]
 
-            # Trim to image sequence length (transformer may output extra tokens)
             noise_pred = noise_pred[:, :image_seq_len]
 
             if do_cfg:
@@ -321,7 +357,7 @@ class FluxKleinModel:
                         hidden_states=latents.to(dtype),
                         timestep=timestep / 1000,
                         guidance=None,
-                        encoder_hidden_states=prompt_embeds,  # empty prompt TODO
+                        encoder_hidden_states=prompt_embeds,
                         txt_ids=text_ids,
                         img_ids=latent_ids,
                         return_dict=False,
@@ -345,10 +381,13 @@ class FluxKleinModel:
         latents = self.pipe._unpatchify_latents(latents)
 
         # VAE decode: (B, 32, H/8, W/8) → (B, 3, H, W)
-        image = self.pipe.vae.decode(latents.to(dtype), return_dict=False)[0]
+        decoded = self.pipe.vae.decode(latents.to(dtype), return_dict=False)[0]
 
-        # Postprocess to PIL then to THWC tensor
-        pil_images = self.pipe.image_processor.postprocess(image, output_type="pil")
+        # Direct tensor conversion — skip PIL round-trip
+        # decoded is (B, 3, H, W) in roughly [-1, 1]
+        decoded = (decoded.clamp(-1, 1) + 1) / 2  # → [0, 1]
+        # BCHW → BHWC → (1, H, W, 3)
+        result = decoded[0].permute(1, 2, 0).unsqueeze(0).float().cpu()
 
         elapsed = time.perf_counter() - t0
         print(
@@ -357,7 +396,7 @@ class FluxKleinModel:
             flush=True,
         )
 
-        return self._pil_to_thwc_tensor(pil_images[0])
+        return result
 
     @staticmethod
     def _thwc_tensor_to_pil(tensor: torch.Tensor) -> Image.Image:
