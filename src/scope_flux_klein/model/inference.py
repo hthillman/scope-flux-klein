@@ -258,20 +258,16 @@ class FluxKleinModel:
         clean_latents = self.pipe._pack_latents(image_latents)
 
         # --- 3. Set up truncated schedule ---
-        print(
-            f"[FLUX-KLEIN] refine_frame: setting timesteps "
-            f"num_steps={self.num_inference_steps} device={device} "
-            f"strength={strength} "
-            f"scheduler={type(self.pipe.scheduler).__name__}",
-            flush=True,
+        # Flux2Klein uses dynamic shifting — mu must be computed from
+        # the packed sequence length (same as Flux2KleinPipeline.__call__)
+        image_seq_len = clean_latents.shape[1]
+        from diffusers.pipelines.flux2.pipeline_flux2_klein import compute_empirical_mu
+        mu = compute_empirical_mu(image_seq_len, self.num_inference_steps)
+
+        self.pipe.scheduler.set_timesteps(
+            self.num_inference_steps, device=device, mu=mu,
         )
-        try:
-            self.pipe.scheduler.set_timesteps(self.num_inference_steps, device=device)
-        except Exception as e:
-            print(f"[FLUX-KLEIN] set_timesteps ERROR: {type(e).__name__}: {e}", flush=True)
-            # Fallback: try without device
-            self.pipe.scheduler.set_timesteps(self.num_inference_steps)
-        all_timesteps = self.pipe.scheduler.timesteps.to(device)
+        all_timesteps = self.pipe.scheduler.timesteps
 
         init_timestep = min(
             int(self.num_inference_steps * strength), self.num_inference_steps,
