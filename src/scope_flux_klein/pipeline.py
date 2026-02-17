@@ -86,6 +86,12 @@ class FluxKleinPipeline(Pipeline):
         then each subsequent frame "edits" the previous output via img2img. This is
         faster and produces smooth continuous output.
         """
+        # Diagnostic: log all kwargs so we can see what Scope sends
+        logger.info(
+            "__call__ kwargs: %s",
+            {k: (type(v).__name__, v) if not isinstance(v, (torch.Tensor, list)) else type(v).__name__ for k, v in kwargs.items()},
+        )
+
         # Read runtime parameters
         prompt = kwargs.get("prompt", "")
         guidance_scale = kwargs.get("guidance_scale", 1.0)
@@ -96,16 +102,11 @@ class FluxKleinPipeline(Pipeline):
         seed = kwargs.get("seed", -1)
         video = kwargs.get("video")
 
-        # If prompt is empty, return previous output or black frame
-        if not prompt.strip():
-            if self._prev_output is not None:
-                return {"video": self._prev_output}
-            return {"video": torch.zeros(1, output_height, output_width, 3)}
-
         # --- Video mode: always use input frame as img2img source ---
+        # Check video FIRST — video mode should work even with empty prompt
         if video is not None and len(video) > 0:
             result = self._generate_img2img(
-                prompt=prompt,
+                prompt=prompt if prompt.strip() else "high quality image",
                 input_frames=video,
                 strength=strength,
                 width=output_width,
@@ -113,6 +114,13 @@ class FluxKleinPipeline(Pipeline):
                 guidance_scale=guidance_scale,
                 seed=seed,
             )
+
+        # --- Text mode: need a prompt ---
+        elif not prompt.strip():
+            # No prompt and no video — return cached or black
+            if self._prev_output is not None:
+                return {"video": self._prev_output}
+            return {"video": torch.zeros(1, output_height, output_width, 3)}
 
         # --- Text mode with feedback loop (Krea-style) ---
         elif self._prev_output is not None and feedback_strength > 0:
