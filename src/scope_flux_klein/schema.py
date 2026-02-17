@@ -55,12 +55,13 @@ class FluxKleinConfig(BasePipelineConfig):
     # --- Load-time parameters (require pipeline reload) ---
 
     num_inference_steps: int = Field(
-        default=2,
+        default=4,
         ge=1,
         le=8,
         description=(
-            "Number of denoising steps per generation. Fewer steps = faster "
-            "but lower quality. FLUX Klein is optimized for 2-4 steps."
+            "Number of denoising steps for full generation (first frame). "
+            "Subsequent frames use fewer steps via feedback_strength. "
+            "FLUX Klein is optimized for 2-4 steps."
         ),
         json_schema_extra=ui_field_config(
             order=1,
@@ -86,13 +87,15 @@ class FluxKleinConfig(BasePipelineConfig):
     # --- Runtime parameters (adjustable during streaming) ---
 
     feedback_strength: float = Field(
-        default=0.4,
+        default=0.3,
         ge=0.0,
         le=1.0,
         description=(
-            "Strength for feedback loop. When > 0, each frame edits the "
-            "previous output instead of generating from scratch (Krea-style). "
-            "Lower = faster, smoother transitions. 0 = full regeneration each frame."
+            "Denoising strength for Krea-style feedback loop. After the first "
+            "frame, each subsequent frame partially denoises the previous output "
+            "instead of generating from scratch. Lower = fewer steps = faster FPS "
+            "but less prompt adherence. 0 = regenerate fully each frame (slowest). "
+            "0.3 = ~1 step of 4 (fastest). 0.5 = 2 of 4 steps."
         ),
         json_schema_extra=ui_field_config(order=9, label="Feedback Strength"),
     )

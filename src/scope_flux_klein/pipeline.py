@@ -52,7 +52,7 @@ class FluxKleinPipeline(Pipeline):
         )
 
         # Read load-time parameters
-        num_inference_steps = kwargs.get("num_inference_steps", 2)
+        num_inference_steps = kwargs.get("num_inference_steps", 4)
         enable_cpu_offload = kwargs.get("enable_cpu_offload", False)
 
         # Load the FLUX model
@@ -98,7 +98,7 @@ class FluxKleinPipeline(Pipeline):
         guidance_scale = kwargs.get("guidance_scale", 1.0)
         output_width = kwargs.get("output_width", 384)
         output_height = kwargs.get("output_height", 384)
-        feedback_strength = kwargs.get("feedback_strength", 0.4)
+        feedback_strength = kwargs.get("feedback_strength", 0.3)
         seed = kwargs.get("seed", -1)
         video = kwargs.get("video")
 
@@ -121,17 +121,18 @@ class FluxKleinPipeline(Pipeline):
                 return {"video": self._prev_output}
             return {"video": torch.zeros(1, output_height, output_width, 3)}
 
-        # --- Text mode with feedback loop (Krea-style) ---
+        # --- Text mode with feedback loop (Krea-style partial denoise) ---
         elif self._prev_output is not None and feedback_strength > 0:
-            # Convert previous output tensor back to PIL for img2img
+            # Partial denoise: encode prev output, add noise, denoise fewer steps
             prev_pil = self.model._thwc_tensor_to_pil(self._prev_output)
-            result = self.model.image_to_image(
+            result = self.model.refine_frame(
                 prompt=prompt,
-                image=prev_pil,
+                previous_image=prev_pil,
                 width=output_width,
                 height=output_height,
                 guidance_scale=guidance_scale,
                 seed=seed,
+                strength=feedback_strength,
             )
 
         # --- Text mode, first frame or feedback disabled ---
