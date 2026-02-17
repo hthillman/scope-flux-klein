@@ -324,37 +324,23 @@ class FluxKleinModel:
         latents = start_sigma * noise + (1.0 - start_sigma) * clean_latents
 
         # --- 5. Run transformer for remaining steps ---
-        do_cfg = guidance_scale > 1.0
-
+        # Call transformer directly without cache_context — avoids KV-cache
+        # state conflicts when running outside the pipeline's normal flow.
+        # With guidance_scale=1.0 (default for Klein), CFG is disabled.
         for t in timesteps:
             timestep = t.expand(latents.shape[0]).to(latents.dtype)
 
-            with self.pipe.transformer.cache_context("cond"):
-                noise_pred = self.pipe.transformer(
-                    hidden_states=latents.to(dtype),
-                    timestep=timestep / 1000,
-                    guidance=None,
-                    encoder_hidden_states=prompt_embeds,
-                    txt_ids=text_ids,
-                    img_ids=latent_ids,
-                    return_dict=False,
-                )[0]
+            noise_pred = self.pipe.transformer(
+                hidden_states=latents.to(dtype),
+                timestep=timestep / 1000,
+                guidance=None,
+                encoder_hidden_states=prompt_embeds,
+                txt_ids=text_ids,
+                img_ids=latent_ids,
+                return_dict=False,
+            )[0]
 
             noise_pred = noise_pred[:, :image_seq_len]
-
-            if do_cfg:
-                with self.pipe.transformer.cache_context("uncond"):
-                    neg_pred = self.pipe.transformer(
-                        hidden_states=latents.to(dtype),
-                        timestep=timestep / 1000,
-                        guidance=None,
-                        encoder_hidden_states=prompt_embeds,
-                        txt_ids=text_ids,
-                        img_ids=latent_ids,
-                        return_dict=False,
-                    )[0]
-                neg_pred = neg_pred[:, :image_seq_len]
-                noise_pred = neg_pred + guidance_scale * (noise_pred - neg_pred)
 
             # Euler step
             latents = self.pipe.scheduler.step(
