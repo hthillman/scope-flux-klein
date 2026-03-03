@@ -1,5 +1,7 @@
 # scope-flux-klein
 
+[![Available on Daydream](https://img.shields.io/badge/Daydream-Install_Node-FF6B35)](https://app.daydream.live/nodes/hthillman/flux-klein)
+
 Real-time image generation plugin for [Daydream Scope](https://github.com/daydreamlive/scope) using Black Forest Labs' [FLUX.2-klein-4B](https://huggingface.co/black-forest-labs/FLUX.2-klein-4B) model.
 
 Uses a Krea-style feedback loop: the first frame generates from scratch, then each subsequent frame "edits" the previous output via img2img. This is faster than full regeneration and produces smooth, continuous output as you adjust prompts and sliders.
